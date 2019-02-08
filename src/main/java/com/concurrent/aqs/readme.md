@@ -1029,6 +1029,10 @@ A在运行过程中释放掉2个资源量，然后tryReleaseShared(2)返回true�
 后面会有专门的文章来分享AQS的实际应用来帮助我们加深理解。
 
 
+参考：
+    https://www.cnblogs.com/waterystone/p/4920797.html等整理而成
+
+
 
 
 
