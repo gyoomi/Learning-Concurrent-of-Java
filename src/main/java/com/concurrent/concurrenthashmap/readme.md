@@ -1,7 +1,8 @@
 ## 并发容器之ConcurrentHashMap源码实现
 ### 一、背景
-其实这一小节主要的可以转换为："为什么在多线程环境下使用ConcurrentHashMap,而非HashMap?"
-其实我简单总结了三点原因。
+其实这一小节主要内容可以换一种说法："为什么要使用ConcurrentHashMap,而非HashMap?尤其是在多线程环境下？"
+其实我简单总结了以下三点原因，可以回答上述问题。此外声明下本文研究的源码版本以JDK1.7标准，其他版本的代码略有差异，尤其是JDK1.8
+,后面有时间在详细研究。
 
 1. **HashMap的线程不安全**
 
@@ -38,7 +39,7 @@ HashTable容器在竞争激烈的并发环境下表现出效率低下的原因�
 储，然后给每一段数据配一把锁，当一个线程占用锁访问其中一个段数据的时候，其他段的数
 据也能被其他线程访问。</font>
 
-暂时先这里理解，下面解析ConcurrentHashMap的属性、构造器及内部类的时候，你就会明白上面的那段话。
+暂时先这样理解，下面在解析ConcurrentHashMap的属性、构造器及内部类的时候，你就会明白上面的那段话。
 #### 2.2 原理图
 
 ![](./asserts/001.png)
@@ -111,7 +112,7 @@ HashTable容器在竞争激烈的并发环境下表现出效率低下的原因�
     //     值都是1。因为ssize的最大长度是65536，所以segmentShift最大值是16，segmentMask最大值是
     //     65535，对应的二进制是16位，每个位都是1。
     // 2. 初始化Segment[]对象
-    // 2.1 初始化每个Segment对象
+    // 2.1 初始化Segment对象
     //     输入参数initialCapacity是ConcurrentHashMap的初始化容量，loadfactor是每个segment的负
     //     载因子，在构造方法里需要通过这两个参数来初始化数组中的每个segment。
     //     变量cap就是segment里HashEntry数组的长度，它等于initialCapacity除以ssize
@@ -319,7 +320,7 @@ static final class Segment<K,V> extends ReentrantLock implements Serializable {
                         if (node != null)
                             node.setNext(first);
                         else
-                        // node为null，表明scanAndLockForPut过程中找到了key值相同的node
+                        // node为null，表明sca 表明scanAndLockForPut过程中找到了key值相同的nodenAndLockForPut过程中找到了key值相同的node
                         // 可以断定在等待获取锁的过程中，这个node被删除了，此时需要新建一个node
                             node = new HashEntry<K,V>(hash, key, value, first);
                         int c = count + 1;
@@ -343,9 +344,12 @@ static final class Segment<K,V> extends ReentrantLock implements Serializable {
 
         @SuppressWarnings("unchecked")
         private void rehash(HashEntry<K,V> node) {
+            // 拷贝table，所有操作都在oldTable上进行，不会影响无需获得锁的读操作
             HashEntry<K,V>[] oldTable = table;
             int oldCapacity = oldTable.length;
+            // 容量翻倍
             int newCapacity = oldCapacity << 1;
+            // 更新阈值
             threshold = (int)(newCapacity * loadFactor);
             HashEntry<K,V>[] newTable =
                 (HashEntry<K,V>[]) new HashEntry[newCapacity];
@@ -354,10 +358,13 @@ static final class Segment<K,V> extends ReentrantLock implements Serializable {
                 HashEntry<K,V> e = oldTable[i];
                 if (e != null) {
                     HashEntry<K,V> next = e.next;
+                    // 新的table下标，定位链表
                     int idx = e.hash & sizeMask;
                     if (next == null)   //  Single node on list
+                        // 链表只有一个node，直接赋值
                         newTable[idx] = e;
                     else { // Reuse consecutive sequence at same slot
+                        // 这里获取特殊node
                         HashEntry<K,V> lastRun = e;
                         int lastIdx = idx;
                         for (HashEntry<K,V> last = next;
@@ -369,8 +376,10 @@ static final class Segment<K,V> extends ReentrantLock implements Serializable {
                                 lastRun = last;
                             }
                         }
+                        // 步骤一中的table[n]赋值过程
                         newTable[lastIdx] = lastRun;
                         // Clone remaining nodes
+                        // 步骤二，遍历剩余node，插入对应表头
                         for (HashEntry<K,V> p = e; p != lastRun; p = p.next) {
                             V v = p.value;
                             int h = p.hash;
@@ -387,6 +396,11 @@ static final class Segment<K,V> extends ReentrantLock implements Serializable {
             table = newTable;
         }
 
+         // put方法调用本方法获取锁，通过自旋锁等待其他线程释放锁。
+         // 变量retries记录自旋锁循环次数，当retries超过MAX_SCAN_RETRIES时，不再自旋，调用lock方法等待锁释放。
+         // 变量first记录hash计算出的所在链表的表头node，每次循环结束，重新获取表头node，与first比较，如果发生变化，说明在自旋期间，有新的node插入了链表，retries计数重置。
+         // 自旋过程中，会遍历链表，如果发现不存在对应key值的node，创建一个，这个新node可以作为返回值返回。
+         //  根据官方注释，自旋过程中遍历链表是为了缓存预热，减少hash表经常出现的cache miss
         private HashEntry<K,V> scanAndLockForPut(K key, int hash, V value) {
             HashEntry<K,V> first = entryForHash(this, hash);
             HashEntry<K,V> e = first;
@@ -396,7 +410,8 @@ static final class Segment<K,V> extends ReentrantLock implements Serializable {
                 HashEntry<K,V> f; // to recheck first below
                 if (retries < 0) {
                     if (e == null) {
-                        if (node == null) // speculatively create node
+                        if (node == null) // speculatively create node 
+                        // 链表为空或者遍历至链表最后一个node仍没有找到匹配
                             node = new HashEntry<K,V>(hash, key, value, null);
                         retries = 0;
                     }
@@ -408,7 +423,7 @@ static final class Segment<K,V> extends ReentrantLock implements Serializable {
                 else if (++retries > MAX_SCAN_RETRIES) {
                     lock();
                     break;
-                }
+                } // 比较first与新获得的链表表头node是否一致，如果不一致，说明该链表别修改过，自旋计数重置
                 else if ((retries & 1) == 0 &&
                          (f = entryForHash(this, hash)) != first) {
                     e = first = f; // re-traverse if entry changed
@@ -418,6 +433,8 @@ static final class Segment<K,V> extends ReentrantLock implements Serializable {
             return node;
         }
 
+        // remove,replace方法会调用本方法获取锁，通过自旋锁等待其他线程释放锁。
+        // 与scanAndLockForPut机制相似。
         private void scanAndLock(Object key, int hash) {
             // similar to but simpler than scanAndLockForPut
             HashEntry<K,V> first = entryForHash(this, hash);
@@ -443,9 +460,10 @@ static final class Segment<K,V> extends ReentrantLock implements Serializable {
             }
         }
 
-        /**
-         * Remove; match on key only if value null, else match both.
-         */
+        // 删除key-value都匹配的node，删除过程很简单
+        // 1.根据hash计算table下标index
+        // 2.根据index定位链表，遍历链表node，如果存在node的key值和value值都匹配，删除该node。
+        // 3.令node的前一个节点pred的pred.next = node.next。
         final V remove(Object key, int hash, Object value) {
             if (!tryLock())
                 scanAndLock(key, hash);
