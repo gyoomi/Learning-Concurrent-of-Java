@@ -498,7 +498,8 @@ static final class Segment<K,V> extends ReentrantLock implements Serializable {
             }
             return oldValue;
         }
-
+        
+        // 和remove()过程相似
         final boolean replace(K key, int hash, V oldValue, V newValue) {
             if (!tryLock())
                 scanAndLock(key, hash);
@@ -523,6 +524,7 @@ static final class Segment<K,V> extends ReentrantLock implements Serializable {
             return replaced;
         }
 
+        // 和remove()过程相似
         final V replace(K key, int hash, V value) {
             if (!tryLock())
                 scanAndLock(key, hash);
@@ -560,10 +562,102 @@ static final class Segment<K,V> extends ReentrantLock implements Serializable {
     }
 ```
 #### 3.5 常见操作
-1. put()
-2. get()
+1. get()
+
+   Segment的get操作实现非常简单和高效。<font color='red'>先经过一次再散列，然后使用这个散列值通过散
+   列运算定位到Segment，再通过散列算法定位到元素</font>，代码如下。
+
+   ```
+       public V get(Object key) {
+           Segment<K,V> s; // manually integrate access methods to reduce overhead
+           HashEntry<K,V>[] tab;
+           int h = hash(key);
+           // 定位到key所属的segment在内存中偏移量
+           long u = (((h >>> segmentShift) & segmentMask) << SSHIFT) + SBASE;
+           if ((s = (Segment<K,V>)UNSAFE.getObjectVolatile(segments, u)) != null &&
+               (tab = s.table) != null) {
+               // 定位到key在segment对象中某个hash位置，循环此链表进行判断：发现key值相等直接返回。
+               for (HashEntry<K,V> e = (HashEntry<K,V>) UNSAFE.getObjectVolatile
+                        (tab, ((long)(((tab.length - 1) & h)) << TSHIFT) + TBASE);
+                    e != null; e = e.next) {
+                   K k;
+                   if ((k = e.key) == key || (e.hash == h && key.equals(k)))
+                       return e.value;
+               }
+           }
+           return null;
+       }
+   ```
+
+   get()是高效的。原因有以下几点来保证：
+   1. volatile保证了变量的可见性
+   2. get()是无锁的，没有锁资源消耗。
+   3. 强大的hash散列的支持，使其在性能趋近O(1)的时空复杂度
+2. put()
+
+   由于put方法里需要对共享变量进行写入操作，所以为了线程安全，在操作共享变量时必
+   须加锁。put方法首先定位到Segment，然后在Segment里进行插入操作。插入操作需要经历两个
+   步骤，第一步判断是否需要对Segment里的HashEntry数组进行扩容，第二步定位添加元素的位
+   置，然后将其放在HashEntry数组里。代码如下：
+
+   ```
+       public V put(K key, V value) {
+           // 1. 定位Segment
+           Segment<K,V> s;
+           if (value == null)
+               throw new NullPointerException();
+           int hash = hash(key);
+           int j = (hash >>> segmentShift) & segmentMask;
+           if ((s = (Segment<K,V>)UNSAFE.getObject          // nonvolatile; recheck
+                (segments, (j << SSHIFT) + SBASE)) == null) //  in ensureSegment
+               s = ensureSegment(j);
+           // 2. 调用的segment的put()方法进行放置
+           //    具体步骤可参见上面Segment部门
+           return s.put(key, hash, value, false);
+       }
+   ```
+
+   Segment中put的主要思路分为两部分：
+
+   1. 是否需要扩容
+
+   在插入元素前会先判断Segment里的HashEntry数组是否超过容量（threshold），如果超过阈
+   值，则对数组进行扩容。值得一提的是，Segment的扩容判断比HashMap更恰当，因为HashMap
+   是在插入元素后判断元素是否已经到达容量的，如果到达了就进行扩容，但是很有可能扩容
+   之后没有新元素插入，这时HashMap就进行了一次无效的扩容。
+
+   2. 如何扩容
+
+   在扩容的时候，首先会创建一个容量是原来容量两倍的数组，然后将原数组里的元素进
+   行再散列后插入到新的数组里。为了高效，ConcurrentHashMap不会对整个容器进行扩容，而只
+   对某个segment进行扩容。
 3. remove()
-### 四、总结
+
+   remove()方法的实现的比较简单，和之前get和put方法类似，先定位Segment的位置。然后调用Segmenet中的删除操作。代码如下：
+
+   ```
+       public V remove(Object key) {
+           int hash = hash(key);
+           Segment<K,V> s = segmentForHash(hash);
+           return s == null ? null : s.remove(key, hash, null);
+       }
+   ```
+4. size()
+
+   如果要统计整个ConcurrentHashMap里元素的大小，就必须统计所有Segment里元素的大小
+   后求和。Segment里的全局变量count是一个volatile变量，那么在多线程场景下，是不是直接把
+   所有Segment的count相加就可以得到整个ConcurrentHashMap大小了呢？不是的，虽然相加时
+   可以获取每个Segment的count的最新值，但是可能累加前使用的count发生了变化，那么统计结
+   果就不准了。所以，最安全的做法是在统计size的时候把所有Segment的put、remove和clean方法
+   全部锁住，但是这种做法显然非常低效。
+
+   因为在累加count操作过程中，之前累加过的count发生变化的几率非常小，所以
+   ConcurrentHashMap的做法是先尝试2次通过不锁住Segment的方式来统计各个Segment大小，如
+   果统计的过程中，容器的count发生了变化，则再采用加锁的方式来统计所有Segment的大小。
+
+   那么ConcurrentHashMap是如何判断在统计的时候容器是否发生了变化呢？使用modCount
+   变量，在put、remove和clean方法里操作元素前都会将变量modCount进行加1，那么在统计size
+   前后比较modCount是否发生变化，从而得知容器的大小是否发生变化。
 
 
 
