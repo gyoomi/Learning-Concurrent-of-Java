@@ -144,6 +144,7 @@ HashTable容器在竞争激烈的并发环境下表现出效率低下的原因�
         while (cap < c)
             cap <<= 1;
         // create segments and segments[0]
+        // 创建segments数组并初始化第一个Segment，其余的Segment延迟初始化
         Segment<K,V> s0 =
             new Segment<K,V>(loadFactor, (int)(cap * loadFactor),
                              (HashEntry<K,V>[])new HashEntry[cap]);
