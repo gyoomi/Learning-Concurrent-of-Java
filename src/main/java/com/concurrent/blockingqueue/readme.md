@@ -29,15 +29,15 @@
    远不会被阻塞，而且使用offer方法时，该方法永远返回true
 ### 二、Java里的阻塞队列
 JDK中提供了7个阻塞队列（1.7版本），如下：
-- ArrayBlockQueue：一个由数组结构组成的有界阻塞队列
-- LinkedBlockQueue：一个由链表结构组成的有界阻塞队列
-- PriorityBlockQueue：一个支持优先级排序的无界阻塞队列
+- ArrayBlockingQueue：一个由数组结构组成的有界阻塞队列
+- LinkedBlockingQueue：一个由链表结构组成的有界阻塞队列
+- PriorityBlockingQueue：一个支持优先级排序的无界阻塞队列
 - DelayQueue：一个使用优先级队列实现的无界阻塞队列
 - SynchronousQueue：一个不存储元素的阻塞队列
 - LinkedTransferQueue：一个由链表结构组成的无界阻塞队列
-- LinkedBlockDeque：一个由链表结构组成的双向阻塞队列
+- LinkedBlockingDeque：一个由链表结构组成的双向阻塞队列
 
-1. ArrayBlockQueue
+1. ArrayBlockingQueue
    1. 定义
 
       ArrayBlockingQueue是一个用数组实现的有界阻塞队列。此队列按照先进先出（FIFO）的原
@@ -54,7 +54,7 @@ JDK中提供了7个阻塞队列（1.7版本），如下：
 
       LinkedBlockingQueue是一个用链表实现的有界阻塞队列。此队列的默认和最大长度为
       Integer.MAX_VALUE。此队列按照先进先出的原则对元素进行排序。
-3. PriorityBlockQueue
+3. PriorityBlockingQueue
    1. 定义
 
       PriorityBlockingQueue是一个支持优先级的无界阻塞队列。默认情况下元素采取自然顺序
