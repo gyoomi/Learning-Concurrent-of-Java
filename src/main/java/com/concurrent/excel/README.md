@@ -1,4 +1,4 @@
-# 超大数据量Excel导入和导出（支持10万+）
+# 超大Excel导入和导出（支持50万+）
 
 ## 一、现状
 
@@ -20,10 +20,10 @@
 POI提供了HSSF和XSSF的API可以自JAVA中读取修改xls/xlsx文件，但是自面对大文件时就容易报出OOM，
 因此提供了接口可以以流式的方式读取/写入(xls/xlsx）。
 
-    | excel类型        | 普通数据量    |  超大数据量  |
-    | --------        | -----:       | :----: |
-    | xls             | 读写均支持(HSSF即可)      |   仅支持流式读取    |
-    | xlsx            | 读写均支持(XSSF即可)      |   读写均支持(sax流式读取；SXSSF流式写出)     |
+| excel类型        | 普通数据量    |  超大数据量  |
+| --------        | -----:       | :----: |
+| xls             | 读写均支持(HSSF即可)      |   仅支持流式读取    |
+| xlsx            | 读写均支持(XSSF即可)      |   读写均支持(sax流式读取；SXSSF流式写出)     |
 
 鉴于目前我们项目中使用的均是office2007以后的版本，所以xls的读写在这里就不做过多演示和说明。
 
@@ -103,7 +103,7 @@ Exception in thread "main" java.lang.OutOfMemoryError: Java heap space
 原因总结：处理xlsx时会将数据完全读入内存，导致内存溢出。根据笔者的经验，10m的excel在后台完全处理的情况至少需要2GB内存，这个
 放大的倍数还是很吓人的，怪不得造成内存溢出。
 
-### 2.2 小内存实现海量excel数据读取
+### 2.2 小内存实现超大excel数据读取
 
 上一小节，我们已经定位在OOM的原因，针对这种情况，POI官方也给出了解决方案。就是事件驱动模式（Event API）。
 
@@ -226,4 +226,142 @@ D153798 - 木芙蓉
 
 ## 三、海量写出
 
+### 3.1 线上内存溢出问题演示
+
+**环境准备**
+
+jvm运行参数设置如下： `-Xms100M -Xmx100M -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=d://dump.hprof`
+
+**示例代码**
+
+```java
+/**
+ * 超大excel写出示例
+ *
+ * @author Leon
+ * @date 2020-05-06 11:23
+ */
+public class WriteExcelDemo
+{
+
+	public static void main(String[] args) throws Exception
+	{
+		XSSFWorkbook wb = new XSSFWorkbook();
+		XSSFSheet sheet = wb.createSheet("sheet-test");
+
+		// 模拟写出50万条数据
+		for (int i = 0; i < 500000; i++)
+		{
+			XSSFRow curRow = sheet.createRow(i);
+			XSSFCell cell = curRow.createCell(0);
+			cell.setCellValue(LocalDate.now().toString());
+		}
+
+		FileOutputStream fos = new FileOutputStream("d:\\test111.xlsx");
+		wb.write(fos);
+		fos.close();
+	}
+}
+```
+
+**运行结果**
+
+```text
+java.lang.OutOfMemoryError: GC overhead limit exceeded
+Dumping heap to d://dump.hprof ...
+Heap dump file created [163701970 bytes in 0.973 secs]
+Exception in thread "main" java.lang.OutOfMemoryError: GC overhead limit exceeded
+	at org.apache.xmlbeans.impl.store.Xobj.ensureParent(Xobj.java:614)
+	at org.apache.xmlbeans.impl.store.Xobj.getNormal(Xobj.java:661)
+	at org.apache.xmlbeans.impl.store.Cur.getNormal(Cur.java:2464)
+	at org.apache.xmlbeans.impl.store.Cur.skip(Cur.java:1269)
+	at org.apache.xmlbeans.impl.store.Cur.moveNode(Cur.java:1840)
+	at org.apache.xmlbeans.impl.store.Cur.createHelper(Cur.java:287)
+	at org.apache.xmlbeans.impl.store.Cur.createElement(Cur.java:231)
+	at org.apache.xmlbeans.impl.store.Cur.createElement(Cur.java:226)
+	at org.apache.xmlbeans.impl.store.Xobj.insertElement(Xobj.java:2116)
+	at org.apache.xmlbeans.impl.store.Xobj.add_element_user(Xobj.java:2197)
+	at org.openxmlformats.schemas.spreadsheetml.x2006.main.impl.CTRowImpl.addNewC(Unknown Source)
+	at org.apache.poi.xssf.usermodel.XSSFRow.createCell(XSSFRow.java:220)
+	at org.apache.poi.xssf.usermodel.XSSFRow.createCell(XSSFRow.java:198)
+	at com.concurrent.excel.WriteExcelDemo.main(WriteExcelDemo.java:35)
+
+```
+
+我们发现：发生内存溢出。
+
+### 3.2 小内存实现超大excel数据写出
+
+上一小节，我们演示了OOM现象和原因，针对这种情况，POI官方也给出了解决方案。就是`SXSSF`。
+
+POI提供了SXSSF的方式可以流式的创建十分大的xlsx文件，SXSSF使用了window的概念，如果数据行已经超出window的范围，那么就无法修改其内容。
+
+这个窗口的大小可以在构造函数中设定`new SXSSFWorkbook(int windowSize)` 也可以在sheet中设定`SXSSFSheet#setRandomAccessWindowSize(int windowSize)`，其默认值为`SXSSFWorkbook.DEFAULT_WINDOW_SIZE（100）`。
+
+还要注意SXSSF会创建一些临时文件这个需要在finally中显示地通过调用dispose方法清除，而且临时文件也占用一定硬盘，可以通过`wb.setCompressTempFiles(true)`设置workbook的临时文件使用压缩来减少硬盘占用。
+
+示例如下。
+
+**示例代码**
+
+此代码可直接用于生产环境。
+
+```java
+
+/**
+ * 超大excel写出示例
+ *
+ * @author Leon
+ * @date 2020-05-06 11:23
+ */
+public class SxssfWriteExcelDemo
+{
+
+	public static void main(String[] args) throws Exception
+	{
+		// jvm运行参数： -Xms100M -Xmx100M -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=d://dump.hprof
+		SXSSFWorkbook wb = new SXSSFWorkbook();
+
+		try
+		{
+			Sheet sheet = wb.createSheet();
+
+			// 模拟写出100万条数据
+			for (int i = 0; i < 1000000; i++)
+			{
+				Row curRow = sheet.createRow(i);
+				Cell cell = curRow.createCell(0);
+				cell.setCellValue(LocalDate.now().toString() + UUID.randomUUID().toString() + new Random().nextInt());
+			}
+
+			FileOutputStream fos = new FileOutputStream("d:\\test111.xlsx");
+			wb.write(fos);
+			fos.close();
+		}
+		finally
+		{
+			// 删除临时文件
+			if( wb != null)
+			{
+				wb.dispose();
+			}
+		}
+
+		System.out.println("ok");
+	}
+}
+
+```
+
+**运行结果**
+
+成功写出100w条数据，并且没有报任何错误。
+
+### 3.3 小结
+
+SXSSF可以解决写大文件的问题，但是无法进行修改文件原有的内容，也不支持读源文件。
+
+如果需要，可以结合之前的读大文件，然后将读到的内容通过SXSSF写入新的文件，来达到类似修改的操作。
+
 ## 四、总结
+
